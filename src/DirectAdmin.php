@@ -8,12 +8,21 @@ namespace Solitweb\DirectAdmin;
  * Originally designed for use with DirectAdmin's API, this class will fill any HTTP socket need.
  *
  * Very, very basic usage:
- *   $Socket = new DirectAdmin;
+ *   $Socket = new HTTPSocket;
  *   echo $Socket->get('http://user:pass@somesite.com/somedir/some.file?query=string&this=that');
  *
  * @author Phi1 'l0rdphi1' Stier <l0rdphi1@liquenox.net>
- * @package DirectAdmin
- * @version 3.0.1
+ * @package HTTPSocket
+ * @version 3.0.4
+
+ * 3.0.4
+ * store first proxy headers for return, in event of redirect
+
+ * 3.0.3
+ * curl Cookie for SESSION_ID+SESSION_KEY changed to setopt with 
+
+ * 3.0.2
+ * added longer curl timeouts
 
  * 3.0.1
  * support for tcp:// conversion to http://
@@ -33,7 +42,7 @@ namespace Solitweb\DirectAdmin;
  */
 class DirectAdmin {
 
-	var $version = '3.0.1';
+	var $version = '3.0.4';
 
 	/* all vars are private except $error, $query_cache, and $doFollowLocationHeader */
 
@@ -63,6 +72,9 @@ class DirectAdmin {
 	var $ssl_setting_message = 'DirectAdmin appears to be using SSL. Change your script to connect to ssl://';
 
 	var $extra_headers = array();
+
+	var $proxy = false;
+	var $proxy_headers = array();
 
 	/**
 	 * Create server "connection".
@@ -118,6 +130,23 @@ class DirectAdmin {
 		}
 
 	}
+	/**
+	 * For pass through, this function writes the data in chunks.
+	 */
+	private function stream_chunk($ch, $data)
+	{
+		echo($data);
+		return strlen($data);
+	}
+	private function stream_header($ch, $data)
+	{
+		if (!preg_match('/^HTTP/i', $data))
+		{
+			header($data);
+		}
+		return strlen($data);
+	}
+
 
 	/**
 	 * Query the server
@@ -193,7 +222,7 @@ class DirectAdmin {
 
 		$OK = TRUE;
 
-		if ($this->method == 'GET')
+		if ($this->method == 'GET' && isset($content) && $content != '')
 			$request .= '?'.$content;
 
 		$ch = curl_init($this->remote_host.':'.$this->remote_port.$request);
@@ -207,20 +236,24 @@ class DirectAdmin {
 
 		curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER,1);
-		curl_setopt($ch, CURLOPT_USERAGENT, "DirectAdmin/$this->version");
+		curl_setopt($ch, CURLOPT_USERAGENT, "HTTPSocket/$this->version");
 		curl_setopt($ch, CURLOPT_FORBID_REUSE, 1);
-		curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+		curl_setopt($ch, CURLOPT_TIMEOUT, 100);
 		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 		curl_setopt($ch, CURLOPT_HEADER, 1);
 
-		curl_setopt($ch, CURLOPT_LOW_SPEED_LIMIT, 51200);
-		curl_setopt($ch, CURLOPT_LOW_SPEED_TIME, 5);
+		if ($this->proxy)
+		{
+			curl_setopt($ch, CURLOPT_RETURNTRANSFER,false);
+			curl_setopt($ch, CURLOPT_HEADER,	false);
+			curl_setopt($ch, CURLINFO_HEADER_OUT,	false);
+			curl_setopt($ch, CURLOPT_BUFFERSIZE, 8192); // 8192
+			curl_setopt($ch, CURLOPT_WRITEFUNCTION,  array($this, "stream_chunk"));
+			curl_setopt($ch, CURLOPT_HEADERFUNCTION, array($this, "stream_header"));
+		}
 
-		//if ($this->doFollowLocationHeader)
-		//{
-		//	curl_setopt($ch, CURLOPT_FOLLOWLOCATION, TRUE);
-		//	curl_setopt($ch, CURLOPT_MAXREDIRS, $this->max_redirects);
-		//}
+		curl_setopt($ch, CURLOPT_LOW_SPEED_LIMIT, 512);
+		curl_setopt($ch, CURLOPT_LOW_SPEED_TIME, 120);
 
 		// instance connection
 		if ($this->bind_host)
@@ -237,7 +270,7 @@ class DirectAdmin {
 		// for DA skins: if $this->remote_passwd is NULL, try to use the login key system
 		if ( isset($this->remote_uname) && $this->remote_passwd == NULL )
 		{
-			$array_headers['Cookie'] = "session={$_SERVER['SESSION_ID']}; key={$_SERVER['SESSION_KEY']}";
+			curl_setopt($ch, CURLOPT_COOKIE, "session={$_SERVER['SESSION_ID']}; key={$_SERVER['SESSION_KEY']}");
 		}
 
 		// if method is POST, add content length & type headers
@@ -378,6 +411,9 @@ class DirectAdmin {
 	 */
 	function fetch_header( $header = '' )
 	{
+		if ($this->proxy)
+			return $this->proxy_headers;
+
 		$array_headers = preg_split("/\r\n/",$this->result_header);
 
 		$array_return = array( 0 => $array_headers[0] );
